@@ -320,14 +320,20 @@ __device__ __forceinline__ void load__(
     const int64_t stride = dExpsArgs->nextStridesExps[argOffset];
     const uint64_t logicalRow = isCyclic ? (r + stride) % domainSize : (r + stride);
 
+    // Use pack256 fast path when non-cyclic, stride==0, and blockDim==TILE_HEIGHT
+    const bool usePack256 = !isCyclic && stride == 0 && blockDim.x == TILE_HEIGHT;
+    const uint64_t chunkBase = row; // row is always blockDim.x-aligned
+
     // ConstPols
     if (type == 0) {
         const Goldilocks::Element* basePtr = dExpsArgs->domainExtended
             ? dParams->pConstPolsExtendedTreeAddress
             : dParams->pConstPolsAddress;
 
-        //const uint64_t pos = logicalRow * dArgs->mapSectionsN[0] + argIdx;
-        const uint64_t pos = getBufferOffset(logicalRow, argIdx, domainSize, dArgs->mapSectionsN[0]);
+        const uint64_t nCols0 = dArgs->mapSectionsN[0];
+        const uint64_t pos = usePack256
+            ? getBufferOffset_pack256(chunkBase, argIdx, domainSize, nCols0)
+            : getBufferOffset(logicalRow, argIdx, domainSize, nCols0);
         out0 = (gl64_t*)&basePtr[pos];
         out1 = nullptr;
         out2 = nullptr;
@@ -338,17 +344,32 @@ __device__ __forceinline__ void load__(
     if (type >= 1 && type <= 3) {
         const uint64_t offset = dExpsArgs->mapOffsetsExps[type];
         const uint64_t nCols = dArgs->mapSectionsN[type];
-        const uint64_t pos = getBufferOffset(logicalRow, argIdx, domainSize, nCols);
 
         if (type == 1 && !dExpsArgs->domainExtended) {
+            const uint64_t pos = usePack256
+                ? getBufferOffset_pack256(chunkBase, argIdx, domainSize, nCols)
+                : getBufferOffset(logicalRow, argIdx, domainSize, nCols);
             out0 = (gl64_t*)&dParams->trace[pos];
             out1 = nullptr;
             out2 = nullptr;
             return;
+        } else if (dim == 3 && (argIdx & 3) <= 1) {
+            // Same-tile fast path: all 3 extension columns in same tile
+            // col_block values are argIdx&3, (argIdx+1)&3, (argIdx+2)&3 - all consecutive
+            // Offsets differ by TILE_HEIGHT between consecutive columns in same tile
+            const uint64_t pos0 = usePack256
+                ? getBufferOffset_pack256(chunkBase, argIdx, domainSize, nCols)
+                : getBufferOffset(logicalRow, argIdx, domainSize, nCols);
+            out0 = (gl64_t*)&dParams->aux_trace[offset + pos0];
+            out1 = (gl64_t*)&dParams->aux_trace[offset + pos0 + TILE_HEIGHT];
+            out2 = (gl64_t*)&dParams->aux_trace[offset + pos0 + 2 * TILE_HEIGHT];
+            return;
         } else {
             #pragma unroll
             for (uint64_t d = 0; d < dim; d++) {
-                const uint64_t pos_ = getBufferOffset(logicalRow, argIdx+d, domainSize, nCols);
+                const uint64_t pos_ = usePack256
+                    ? getBufferOffset_pack256(chunkBase, argIdx+d, domainSize, nCols)
+                    : getBufferOffset(logicalRow, argIdx+d, domainSize, nCols);
                 if(d == 0) out0 = (gl64_t*)&dParams->aux_trace[offset + pos_];
                 if(d == 1) out1 = (gl64_t*)&dParams->aux_trace[offset + pos_];
                 if(d == 2) out2 = (gl64_t*)&dParams->aux_trace[offset + pos_];
@@ -738,6 +759,9 @@ __device__ __forceinline__ void computeExpression_chunk_(
             printf(" Wrong operation! %d \n", ops[kk]);
         }
         }
+    }
+    if (i_args != d_destParams[0].nArgs){
+        printf(" %lu consumed args - %lu expected args \n", i_args, d_destParams[0].nArgs);
     }
 
     storePolynomial__(d_expsArgs, (Goldilocks::Element *)res, i);

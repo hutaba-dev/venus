@@ -424,8 +424,7 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
 
     TimerStartCategoryGPU(timer, FRI);
     d_transcript_helper->reset(stream);
-    d_transcript_helper->put(d_challenge, FIELD_EXTENSION, stream);
-    d_transcript_helper->put(d_nonce, 1, stream);
+    d_transcript_helper->put2(d_challenge, FIELD_EXTENSION, d_nonce, 1, stream);
     d_transcript_helper->getPermutations(friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, setupCtx.starkInfo.starkStruct.steps[0].nBits, stream);
 
 #ifdef USE_CUDA_GRAPH
