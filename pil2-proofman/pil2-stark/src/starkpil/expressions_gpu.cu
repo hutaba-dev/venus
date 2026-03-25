@@ -313,8 +313,16 @@ void ExpressionsGPU::calculateExpressionsQ_gpu(StepsParams *d_params, Dest dest,
     bool useTmpInShared = tmpMem <= 40960 && tmpMem > 0;
     size_t sharedMem = useTmpInShared ? (ptrMem + tmpMem) : ptrMem;
 
+    // Dispatch to generated standalone kernel when available, else interpreter
+    ParserParams &qpp = setupCtx.expressionsBin.expressionsInfo[dest.params[0].expId];
+    bool useGenerated = (qpp.nOps == 307 && qpp.nTemp1 == 2 && qpp.nTemp3 == 5);
+
     TimerStartCategoryGPU(timer, EXPRESSIONS);
-    computeExpression_<<<nBlocks_, nThreads_, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams);
+    if (useGenerated) {
+        computeExpression_gen_479_<<<nBlocks_, nThreads_, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams);
+    } else {
+        computeExpression_<<<nBlocks_, nThreads_, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams);
+    }
     CHECKCUDAERR(cudaGetLastError());
     TimerStopCategoryGPU(timer, EXPRESSIONS);
 }
@@ -468,8 +476,8 @@ __device__ __noinline__ void storePolynomial__(ExpsArguments *d_expsArgs, Goldil
     }
 }
 
-// Include generated expression evaluators (after storePolynomial__ is defined)
-#include "generated/generated_dispatch.cuh"
+// Generated expression evaluators compiled in separate CUs to avoid code bloat
+// See generated/gen_kernel_*.cu for standalone kernels
 
 __device__ __noinline__ void multiplyPolynomials__(ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams, DeviceArguments *d_deviceArgs, gl64_t *destVals, uint64_t row)
 {
@@ -782,20 +790,8 @@ __device__ __forceinline__ void computeExpression_chunk_(
     StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs,
     DestParamsGPU *d_destParams, Goldilocks::Element **expressions_params,
     uint32_t bufferCommitsSize, uint64_t i,
-    const uint8_t * __restrict__ ops, const uint16_t * __restrict__ args,
-    bool useGenerated)
+    const uint8_t * __restrict__ ops, const uint16_t * __restrict__ args)
 {
-    // Try generated evaluator (register-resident temps, no interpreter overhead)
-    // Each generated evaluator calls storePolynomial__ directly with the correct result pointer
-    if (useGenerated) {
-        if (dispatch_generated_eval<IsCyclic>(d_params, d_deviceArgs, d_expsArgs,
-                expressions_params, bufferCommitsSize, i,
-                d_destParams[0].nOps, d_destParams[0].nTemp1, d_destParams[0].nTemp3)) {
-            return;
-        }
-    }
-
-    // Fallback: bytecode interpreter
     gl64_t *a0, *a1, *a2, *b0, *b1, *b2;
     gl64_t *res;
 
@@ -896,17 +892,13 @@ __global__  void computeExpression_(StepsParams *d_params, DeviceArguments *d_de
     uint64_t k_min_chunk = d_expsArgs->k_min / blockDim.x;
     uint64_t k_max_chunk = d_expsArgs->k_max / blockDim.x;
 
-    // Generated evaluators: correctness verified but currently regressive (28.4s vs 23s)
-    // due to code size bloat and register pressure. Disabled pending optimization.
-    bool useGenerated = false;
-
     while (chunk_idx < nchunks)
     {
         uint64_t i = chunk_idx * blockDim.x;
         if (chunk_idx < k_min_chunk || chunk_idx >= k_max_chunk) {
-            computeExpression_chunk_<true>(d_params, d_deviceArgs, d_expsArgs, d_destParams, expressions_params, bufferCommitsSize, i, active_ops, active_args, useGenerated);
+            computeExpression_chunk_<true>(d_params, d_deviceArgs, d_expsArgs, d_destParams, expressions_params, bufferCommitsSize, i, active_ops, active_args);
         } else {
-            computeExpression_chunk_<false>(d_params, d_deviceArgs, d_expsArgs, d_destParams, expressions_params, bufferCommitsSize, i, active_ops, active_args, useGenerated);
+            computeExpression_chunk_<false>(d_params, d_deviceArgs, d_expsArgs, d_destParams, expressions_params, bufferCommitsSize, i, active_ops, active_args);
         }
 
         chunk_idx += gridDim.x;

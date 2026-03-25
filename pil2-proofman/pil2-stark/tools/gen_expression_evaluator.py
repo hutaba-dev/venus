@@ -181,7 +181,7 @@ def generate_evaluator(dump, out_path):
     L.append(f'#define GENERATED_EVAL_NTEMP3_{fp} {nTemp3}')
     L.append('')
     L.append('template<bool IsCyclic>')
-    L.append(f'__device__ __forceinline__ void {func_name}(')
+    L.append(f'__device__ __noinline__ void {func_name}(')
     L.append('    const StepsParams* __restrict__ dParams,')
     L.append('    const DeviceArguments* __restrict__ dArgs,')
     L.append('    const ExpsArguments* __restrict__ dExpsArgs,')
