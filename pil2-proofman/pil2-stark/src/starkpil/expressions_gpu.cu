@@ -6,6 +6,24 @@
 
 extern __shared__ Goldilocks::Element scratchpad[];
 
+// Pre-decoded operand: all metadata resolved at init time, no branching at runtime
+struct PreDecodedSrc {
+    uint16_t paramsIdx;   // index into expressions_params[]
+    uint16_t col;         // column for getBufferOffset
+    uint16_t nCols;       // nCols for getBufferOffset
+    int64_t  stride;      // pre-resolved stride value (0 for no stride)
+    uint64_t baseOffset;  // offset from expressions_params[paramsIdx] base
+    uint8_t  dim;         // 1 or 3
+    bool     isConst;     // true if broadcast (same value for all rows)
+};
+
+struct PreDecodedOp {
+    uint8_t dimCombo;     // 0=1x1, 1=3x1, 2=3x3
+    uint8_t arithOp;      // 0=add, 1=sub, 2=mul, 3=sub_swap
+    uint16_t destIdx;     // temp buffer slot index
+    PreDecodedSrc src[2]; // two source operands
+};
+
 ExpressionsGPU::ExpressionsGPU(SetupCtx &setupCtx, uint32_t nRowsPack, uint32_t nBlocks) : ExpressionsCtx(setupCtx), nRowsPack(nRowsPack), nBlocks(nBlocks)
 {
     
@@ -847,4 +865,41 @@ __global__  void computeExpression_(StepsParams *d_params, DeviceArguments *d_de
         chunk_idx += gridDim.x;
     }
 
+}
+
+// Pre-decoded inline load: no type branching, metadata pre-resolved
+__device__ __forceinline__ void load_predecoded_(
+    const PreDecodedSrc &src,
+    Goldilocks::Element **expressions_params,
+    uint64_t row, uint64_t domainSize, bool isCyclic,
+    gl64_t *&out0, gl64_t *&out1, gl64_t *&out2)
+{
+    if (src.isConst) {
+        out0 = (gl64_t*)&expressions_params[src.paramsIdx][src.col];
+        out1 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 1] : nullptr;
+        out2 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 2] : nullptr;
+        return;
+    }
+    uint64_t r = row + threadIdx.x;
+    uint64_t logicalRow = isCyclic ? (r + src.stride) % domainSize : (r + src.stride);
+    if (src.nCols == 0) {
+        out0 = (gl64_t*)&expressions_params[src.paramsIdx][src.col * blockDim.x + threadIdx.x];
+        if (src.dim >= 3) {
+            out1 = (gl64_t*)&expressions_params[src.paramsIdx][(src.col + 1) * blockDim.x + threadIdx.x];
+            out2 = (gl64_t*)&expressions_params[src.paramsIdx][(src.col + 2) * blockDim.x + threadIdx.x];
+        } else { out1 = nullptr; out2 = nullptr; }
+        return;
+    }
+    uint64_t pos = getBufferOffset(logicalRow, src.col, domainSize, src.nCols);
+    Goldilocks::Element *base = expressions_params[src.paramsIdx];
+    out0 = (gl64_t*)&base[src.baseOffset + pos];
+    if (src.dim >= 3 && (src.col & 3) <= 1) {
+        out1 = (gl64_t*)&base[src.baseOffset + pos + TILE_HEIGHT];
+        out2 = (gl64_t*)&base[src.baseOffset + pos + 2 * TILE_HEIGHT];
+    } else if (src.dim >= 3) {
+        uint64_t pos1 = getBufferOffset(logicalRow, src.col + 1, domainSize, src.nCols);
+        uint64_t pos2 = getBufferOffset(logicalRow, src.col + 2, domainSize, src.nCols);
+        out1 = (gl64_t*)&base[src.baseOffset + pos1];
+        out2 = (gl64_t*)&base[src.baseOffset + pos2];
+    } else { out1 = nullptr; out2 = nullptr; }
 }
