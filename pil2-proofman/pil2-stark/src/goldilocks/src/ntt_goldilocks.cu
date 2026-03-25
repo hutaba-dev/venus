@@ -53,26 +53,24 @@ void ntt_cuda_blocks_par2_noBR( gl64_t *data, gl64_t **d_r_, gl64_t **d_fwd_twid
 
 __global__ void applyS(gl64_t *d_cmQ, gl64_t *d_q, gl64_t *d_S, Goldilocks::Element shiftIn, uint64_t N, uint64_t NExtended, uint64_t extendBits, uint64_t qDeg, uint64_t qDim)
 {
-    d_S[0] = gl64_t(uint64_t(1));
-    for(uint64_t i = 1; i < qDeg; ++i) {
-        d_S[i] = gl64_t(shiftIn.fe) * d_S[i - 1];
-    }
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= N)
         return;
 
+    // Compute S values inline per-thread in registers instead of via global memory
+    gl64_t s_val = gl64_t(uint64_t(1));
     for (uint64_t p = 0; p < qDeg; p++)
-    {      
+    {
         Goldilocks3GPU::Element src;
         src[0] = d_q[getBufferOffsetRowMajor(row + p * N, 0, NExtended, qDim)];
         src[1] = d_q[getBufferOffsetRowMajor(row + p * N, 1, NExtended, qDim)];
         src[2] = d_q[getBufferOffsetRowMajor(row + p * N, 2, NExtended, qDim)];
 
         Goldilocks3GPU::Element dst;
-        
+
         Goldilocks3GPU::mul((Goldilocks3GPU::Element &)dst,
                             (Goldilocks3GPU::Element &)src,
-                            d_S[p]);
+                            s_val);
         d_cmQ[getBufferOffsetRowMajor(row, p * qDim, NExtended, qDeg * qDim)] = dst[0];
         d_cmQ[getBufferOffsetRowMajor(row, p * qDim + 1, NExtended, qDeg * qDim)] = dst[1];
         d_cmQ[getBufferOffsetRowMajor(row, p * qDim + 2, NExtended, qDeg * qDim)] = dst[2];
@@ -81,6 +79,7 @@ __global__ void applyS(gl64_t *d_cmQ, gl64_t *d_q, gl64_t *d_S, Goldilocks::Elem
             d_cmQ[getBufferOffsetRowMajor(row + j * N, p * qDim + 1, NExtended, qDeg * qDim)] = gl64_t(uint64_t(0));
             d_cmQ[getBufferOffsetRowMajor(row + j * N, p * qDim + 2, NExtended, qDeg * qDim)] = gl64_t(uint64_t(0));
         }
+        s_val = gl64_t(shiftIn.fe) * s_val;
     }
 }
 

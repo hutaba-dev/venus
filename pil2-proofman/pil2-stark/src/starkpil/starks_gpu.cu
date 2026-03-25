@@ -666,7 +666,7 @@ __device__ void intt_tinny(gl64_t *data, uint32_t N, uint32_t logN, gl64_t *d_tw
     }
 }
 
-__global__ void fold(uint64_t step, gl64_t *friPol, gl64_t *d_challenge, gl64_t *d_ppar, Goldilocks::Element omega_inv, uint64_t shift_, uint64_t W_, uint64_t nBitsExt, uint64_t prevBits, uint64_t currentBits)
+__global__ void fold(uint64_t step, gl64_t *friPol, gl64_t *d_challenge, gl64_t *d_ppar, Goldilocks::Element omega_inv, uint64_t invShiftPow_, uint64_t invW_, uint64_t nBitsExt, uint64_t prevBits, uint64_t currentBits)
 {
 
     extern __shared__ gl64_t s_twiddles[];
@@ -690,15 +690,8 @@ __global__ void fold(uint64_t step, gl64_t *friPol, gl64_t *d_challenge, gl64_t 
     if (id < sizeFoldedPol)
     {
 
-        gl64_t shift(shift_);
-        gl64_t invShift = shift.reciprocal();
-        for (uint32_t j = 0; j < nBitsExt - prevBits; j++)
-        {
-            invShift *= invShift;
-        }
-
-        gl64_t W(W_);
-        gl64_t invW = W.reciprocal();
+        gl64_t invShift(invShiftPow_);
+        gl64_t invW(invW_);
         // Evaluate the sinv value for the id current component
         gl64_t sinv = invShift;
         gl64_t base = invW;
@@ -768,12 +761,20 @@ void fold_inplace(uint64_t step, uint64_t friPol_offset, uint64_t offset_helper,
     uint64_t sizeFoldedPol = 1 << currentBits;
 
     Goldilocks::Element omega_inv = omegas_inv_[prevBits - currentBits];
-    
+
+    // Precompute invShift^(2^(nBitsExt-prevBits)) on CPU to avoid redundant per-thread computation
+    Goldilocks::Element invShiftPow = Goldilocks::inv(Goldilocks::shift());
+    for (uint32_t j = 0; j < nBitsExt - prevBits; j++) {
+        Goldilocks::square(invShiftPow, invShiftPow);
+    }
+    // Precompute invW on CPU
+    Goldilocks::Element invW = Goldilocks::inv(Goldilocks::w(prevBits));
+
     dim3 nThreads(256);
-    dim3 nBlocks((sizeFoldedPol) + nThreads.x - 1 / nThreads.x);
+    dim3 nBlocks((sizeFoldedPol + nThreads.x - 1) / nThreads.x);
     size_t sharedMem = halfRatio * sizeof(gl64_t);
     TimerStartCategoryGPU(timer, FRI);
-    fold<<<nBlocks, nThreads, sharedMem, stream>>>(step, d_friPol, (gl64_t *)d_challenge, d_ppar, omega_inv, Goldilocks::shift().fe, Goldilocks::w(prevBits).fe, nBitsExt, prevBits, currentBits);
+    fold<<<nBlocks, nThreads, sharedMem, stream>>>(step, d_friPol, (gl64_t *)d_challenge, d_ppar, omega_inv, invShiftPow.fe, invW.fe, nBitsExt, prevBits, currentBits);
     TimerStopCategoryGPU(timer, FRI);
     CHECKCUDAERR(cudaGetLastError());
 }
