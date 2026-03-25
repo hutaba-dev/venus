@@ -15,12 +15,19 @@ namespace cudagraph {
         static thread_local CudaGraphCache* ptr = nullptr;
         return ptr;
     }
+    inline bool& aggressive() {
+        static thread_local bool val = false;
+        return val;
+    }
 }
 
 class CudaGraphCache {
     std::unordered_map<uint64_t, cudaGraphExec_t> cache_;
+    std::unordered_map<uint64_t, uint32_t> hitCount_;
     uint64_t pending_key_ = 0;
     bool capturing_ = false;
+
+    static constexpr uint32_t CAPTURE_THRESHOLD = 2;
 
     static void clearCudaError() {
         cudaGetLastError();
@@ -39,8 +46,6 @@ public:
         if (it == cache_.end()) return false;
         cudaError_t err = cudaGraphLaunch(it->second, stream);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[CudaGraphCache] graph launch failed: %s\n",
-                    cudaGetErrorString(err));
             clearCudaError();
             cudaGraphExecDestroy(it->second);
             cache_.erase(it);
@@ -49,13 +54,15 @@ public:
         return true;
     }
 
+    bool shouldCapture(uint64_t key) {
+        return ++hitCount_[key] >= CAPTURE_THRESHOLD;
+    }
+
     void beginCapture(uint64_t key, cudaStream_t stream) {
         pending_key_ = key;
         capturing_ = true;
         cudaError_t err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[CudaGraphCache] begin capture failed: %s\n",
-                    cudaGetErrorString(err));
             clearCudaError();
             capturing_ = false;
         }
@@ -68,8 +75,6 @@ public:
         cudaGraph_t graph = nullptr;
         cudaError_t err = cudaStreamEndCapture(stream, &graph);
         if (err != cudaSuccess || graph == nullptr) {
-            fprintf(stderr, "[CudaGraphCache] end capture failed: %s\n",
-                    cudaGetErrorString(err));
             clearCudaError();
             if (graph) cudaGraphDestroy(graph);
             return false;
@@ -82,8 +87,6 @@ public:
         err = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
 #endif
         if (err != cudaSuccess) {
-            fprintf(stderr, "[CudaGraphCache] instantiate failed: %s\n",
-                    cudaGetErrorString(err));
             clearCudaError();
             cudaGraphDestroy(graph);
             return false;
@@ -91,8 +94,6 @@ public:
 
         err = cudaGraphLaunch(exec, stream);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[CudaGraphCache] launch after capture failed: %s\n",
-                    cudaGetErrorString(err));
             clearCudaError();
             cudaGraphExecDestroy(exec);
             cudaGraphDestroy(graph);
@@ -111,6 +112,7 @@ public:
             cudaGraphExecDestroy(kv.second);
         }
         cache_.clear();
+        hitCount_.clear();
         capturing_ = false;
         clearCudaError();
     }

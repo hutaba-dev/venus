@@ -91,10 +91,11 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
             fprintf(stderr, "[cudaGraph] enabled (stream capture mode)\n");
             printed = true;
         }
-        static CudaGraphCache caches[16];
-        cudagraph::current() = &caches[stream_id % 16];
+        static std::unordered_map<uint32_t, CudaGraphCache> cacheMap;
+        cudagraph::current() = &cacheMap[stream_id];
+        cudagraph::aggressive() = recursive;
     }
-    cudaGetLastError(); // clear any stale error from previous genProof_gpu call
+    cudaGetLastError();
 #endif
 
     uint64_t countId = 0;
@@ -346,7 +347,7 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
         uint64_t currentBits = setupCtx.starkInfo.starkStruct.steps[step].nBits;
 
 #ifdef USE_CUDA_GRAPH
-        {
+        if (cudagraph::aggressive()) {
             CudaGraphCache *graphCache = cudagraph::current();
             if (graphCache) {
                 uint64_t prevBits = step > 0 ? setupCtx.starkInfo.starkStruct.steps[step - 1].nBits : 0;
@@ -357,7 +358,9 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
                 if (graphCache->tryLaunch(key, stream)) {
                     continue;
                 }
-                graphCache->beginCapture(key, stream);
+                if (graphCache->shouldCapture(key)) {
+                    graphCache->beginCapture(key, stream);
+                }
             }
         }
 #endif
@@ -382,9 +385,11 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
         d_transcript->getField((uint64_t *)d_challenge, stream);
 
 #ifdef USE_CUDA_GRAPH
-        {
+        if (cudagraph::aggressive()) {
             CudaGraphCache *graphCache = cudagraph::current();
-            if (graphCache) graphCache->endCaptureAndLaunch(stream);
+            if (graphCache && graphCache->isCapturing()) {
+                graphCache->endCaptureAndLaunch(stream);
+            }
         }
 #endif
     }
@@ -392,7 +397,28 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     TimerStartCategoryGPU(timer, GRINDING);
     Goldilocks::Element *d_input_hash_nonce = (Goldilocks::Element *)d_aux_trace + offsetInputHashNonce;
     CHECKCUDAERR(cudaMemcpyAsync(d_input_hash_nonce, d_challenge, FIELD_EXTENSION * sizeof(Goldilocks::Element), cudaMemcpyDeviceToDevice, stream));
+#ifdef USE_CUDA_GRAPH
+    {
+        CudaGraphCache *graphCache = cudagraph::current();
+        if (graphCache) {
+            uint64_t ctxId = (uint64_t)(uintptr_t)&setupCtx;
+            uint64_t key = CudaGraphCache::makeKey(0x4752494EULL ^ ctxId, setupCtx.starkInfo.starkStruct.powBits);
+            if (graphCache->tryLaunch(key, stream)) {
+                goto skip_grinding;
+            }
+            if (graphCache->shouldCapture(key)) {
+                graphCache->beginCapture(key, stream);
+                Poseidon2GoldilocksGPUGrinding::grinding((uint64_t *)d_nonce, (uint64_t *)d_nonceBlocks, (uint64_t *)d_input_hash_nonce, setupCtx.starkInfo.starkStruct.powBits, stream);
+                graphCache->endCaptureAndLaunch(stream);
+                goto skip_grinding;
+            }
+        }
+    }
+#endif
     Poseidon2GoldilocksGPUGrinding::grinding((uint64_t *)d_nonce, (uint64_t *)d_nonceBlocks, (uint64_t *)d_input_hash_nonce, setupCtx.starkInfo.starkStruct.powBits, stream);
+#ifdef USE_CUDA_GRAPH
+    skip_grinding:
+#endif
     CHECKCUDAERR(cudaGetLastError());
     TimerStopCategoryGPU(timer, GRINDING);
 
@@ -402,10 +428,36 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     d_transcript_helper->put(d_nonce, 1, stream);
     d_transcript_helper->getPermutations(friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, setupCtx.starkInfo.starkStruct.steps[0].nBits, stream);
 
+#ifdef USE_CUDA_GRAPH
+    {
+        CudaGraphCache *graphCache = cudagraph::current();
+        if (graphCache) {
+            uint64_t ctxId = (uint64_t)(uintptr_t)&setupCtx;
+            uint64_t key = CudaGraphCache::makeKey(0x515559ULL ^ ctxId, nTrees, setupCtx.starkInfo.starkStruct.nQueries, setupCtx.starkInfo.starkStruct.steps.size());
+            if (graphCache->tryLaunch(key, stream)) {
+                goto skip_queries;
+            }
+            if (graphCache->shouldCapture(key)) {
+                graphCache->beginCapture(key, stream);
+
+                proveQueries_inplace(setupCtx, d_queries_buff, friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, starks.treesGL, nTrees, d_aux_trace, d_const_tree, setupCtx.starkInfo.nStages, stream);
+                for(uint64_t step = 0; step < setupCtx.starkInfo.starkStruct.steps.size() - 1; ++step) {
+                    proveFRIQueries_inplace(setupCtx, &d_queries_buff[(nTrees + step) * setupCtx.starkInfo.starkStruct.nQueries * setupCtx.starkInfo.maxProofBuffSize], step + 1, setupCtx.starkInfo.starkStruct.steps[step + 1].nBits, friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, starks.treesFRI[step], stream);
+                }
+
+                graphCache->endCaptureAndLaunch(stream);
+                goto skip_queries;
+            }
+        }
+    }
+#endif
     proveQueries_inplace(setupCtx, d_queries_buff, friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, starks.treesGL, nTrees, d_aux_trace, d_const_tree, setupCtx.starkInfo.nStages, stream);
     for(uint64_t step = 0; step < setupCtx.starkInfo.starkStruct.steps.size() - 1; ++step) {
         proveFRIQueries_inplace(setupCtx, &d_queries_buff[(nTrees + step) * setupCtx.starkInfo.starkStruct.nQueries * setupCtx.starkInfo.maxProofBuffSize], step + 1, setupCtx.starkInfo.starkStruct.steps[step + 1].nBits, friQueries_gpu, setupCtx.starkInfo.starkStruct.nQueries, starks.treesFRI[step], stream);
     }
+#ifdef USE_CUDA_GRAPH
+    skip_queries:
+#endif
     TimerStopCategoryGPU(timer, FRI);
     TimerStopGPU(timer, STARK_STEP_FRI);
 
