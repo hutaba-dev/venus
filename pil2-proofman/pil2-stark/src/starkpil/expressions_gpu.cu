@@ -105,6 +105,97 @@ ExpressionsGPU::~ExpressionsGPU()
     CHECKCUDAERR(cudaFree(h_deviceArgs.argsConstraints));
 
     CHECKCUDAERR(cudaFree(d_deviceArgs));
+
+    // Free pre-decoded ops
+    for (auto &kv : d_predecOps) {
+        CHECKCUDAERR(cudaFree(kv.second));
+    }
+}
+
+void ExpressionsGPU::preDecodeExpression(uint64_t expId)
+{
+    if (d_predecOps.count(expId)) return;
+
+    ParserParams &pp = setupCtx.expressionsBin.expressionsInfo[expId];
+    ParserArgs &pa = setupCtx.expressionsBin.expressionsBinArgsExpressions;
+    uint8_t *ops = &pa.ops[pp.opsOffset];
+    uint16_t *args = &pa.args[pp.argsOffset];
+
+    uint32_t base = bufferCommitSize;
+
+    std::vector<PreDecodedOpGPU> h_ops(pp.nOps);
+    for (uint32_t i = 0; i < pp.nOps; i++) {
+        uint16_t *a = &args[i * 8];
+        h_ops[i].dimCombo = ops[i];
+        h_ops[i].arithOp = (uint8_t)a[0];
+        h_ops[i].destIdx = a[1];
+
+        for (int s = 0; s < 2; s++) {
+            uint16_t type = a[2 + s*3];
+            uint16_t argIdx = a[3 + s*3];
+            uint16_t argOff = a[4 + s*3];
+
+            PreDecodedSrcGPU &src = h_ops[i].src[s];
+            src.paramsIdx = type;
+            src.col = argIdx;
+            src.stride = 0;
+            src.baseOffset = 0;
+            src.nCols = 0;
+            src.isConst = 0;
+
+            // Determine dim from op type
+            if (s == 0) {
+                src.dim = (ops[i] == 0) ? 1 : 3;
+            } else {
+                src.dim = (ops[i] <= 1) ? 1 : 3;
+            }
+
+            // Temp buffers: no getBufferOffset needed
+            if (type == base || type == base + 1) {
+                src.nCols = 0;
+                src.isConst = 0;
+                continue;
+            }
+
+            // Constants/broadcasts: same value for all threads
+            if (type >= base + 2) {
+                src.isConst = 1;
+                src.nCols = 0;
+                continue;
+            }
+
+            // Polynomial data: needs getBufferOffset at runtime
+            src.isConst = 0;
+            if (type == 4) {
+                // zi: special offset computation
+                src.nCols = 0;
+            } else if (type == 0) {
+                // constPols
+                src.nCols = mapSectionsN[0];
+            } else if (type >= 1 && type <= 3) {
+                src.nCols = mapSectionsN[type];
+                if (type >= 2) {
+                    src.baseOffset = mapOffsetsExtended[type];
+                }
+            } else {
+                // custom commits
+                uint64_t idx = type - (setupCtx.starkInfo.nStages + 4);
+                src.nCols = mapSectionsNCustomFixed[idx];
+                src.baseOffset = mapOffsetsCustomFixedExtended[idx];
+            }
+
+            // Resolve stride offset
+            if (argOff < setupCtx.starkInfo.openingPoints.size()) {
+                src.stride = nextStridesExtended[argOff];
+            }
+        }
+    }
+
+    PreDecodedOpGPU *d_ops;
+    CHECKCUDAERR(cudaMalloc(&d_ops, pp.nOps * sizeof(PreDecodedOpGPU)));
+    CHECKCUDAERR(cudaMemcpy(d_ops, h_ops.data(), pp.nOps * sizeof(PreDecodedOpGPU), cudaMemcpyHostToDevice));
+    d_predecOps[expId] = d_ops;
+    predecNOps[expId] = pp.nOps;
 }
 
 void ExpressionsGPU::calculateExpressions_gpu(StepsParams *d_params, Dest dest, uint64_t domainSize, bool domainExtended, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams, Goldilocks::Element *pinned_exps_params, Goldilocks::Element *pinned_exps_args, uint64_t& countId, TimerGPU &timer, cudaStream_t stream, bool constraints)
@@ -867,22 +958,21 @@ __global__  void computeExpression_(StepsParams *d_params, DeviceArguments *d_de
 
 }
 
-// Pre-decoded inline load: no type branching, metadata pre-resolved
-__device__ __forceinline__ void load_predecoded_(
-    const PreDecodedSrc &src,
+// Pre-decoded inline load: uses pre-resolved metadata but dispatches through
+// the same pointer paths as the original load__ function
+__device__ __forceinline__ void load_predecoded_gpu_(
+    const PreDecodedSrcGPU &src,
+    const DeviceArguments* __restrict__ dArgs,
+    const ExpsArguments* __restrict__ dExpsArgs,
+    const StepsParams* __restrict__ dParams,
     Goldilocks::Element **expressions_params,
     uint64_t row, uint64_t domainSize, bool isCyclic,
     gl64_t *&out0, gl64_t *&out1, gl64_t *&out2)
 {
-    if (src.isConst) {
-        out0 = (gl64_t*)&expressions_params[src.paramsIdx][src.col];
-        out1 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 1] : nullptr;
-        out2 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 2] : nullptr;
-        return;
-    }
-    uint64_t r = row + threadIdx.x;
-    uint64_t logicalRow = isCyclic ? (r + src.stride) % domainSize : (r + src.stride);
-    if (src.nCols == 0) {
+    const uint32_t base = dArgs->bufferCommitSize;
+
+    // Temp buffers (base+0, base+1): stored in expressions_params
+    if (src.paramsIdx == base || src.paramsIdx == base + 1) {
         out0 = (gl64_t*)&expressions_params[src.paramsIdx][src.col * blockDim.x + threadIdx.x];
         if (src.dim >= 3) {
             out1 = (gl64_t*)&expressions_params[src.paramsIdx][(src.col + 1) * blockDim.x + threadIdx.x];
@@ -890,16 +980,161 @@ __device__ __forceinline__ void load_predecoded_(
         } else { out1 = nullptr; out2 = nullptr; }
         return;
     }
-    uint64_t pos = getBufferOffset(logicalRow, src.col, domainSize, src.nCols);
-    Goldilocks::Element *base = expressions_params[src.paramsIdx];
-    out0 = (gl64_t*)&base[src.baseOffset + pos];
-    if (src.dim >= 3 && (src.col & 3) <= 1) {
-        out1 = (gl64_t*)&base[src.baseOffset + pos + TILE_HEIGHT];
-        out2 = (gl64_t*)&base[src.baseOffset + pos + 2 * TILE_HEIGHT];
-    } else if (src.dim >= 3) {
-        uint64_t pos1 = getBufferOffset(logicalRow, src.col + 1, domainSize, src.nCols);
-        uint64_t pos2 = getBufferOffset(logicalRow, src.col + 2, domainSize, src.nCols);
-        out1 = (gl64_t*)&base[src.baseOffset + pos1];
-        out2 = (gl64_t*)&base[src.baseOffset + pos2];
-    } else { out1 = nullptr; out2 = nullptr; }
+
+    // Constants/broadcasts (base+2 and above): stored in expressions_params
+    if (src.paramsIdx >= base + 2) {
+        out0 = (gl64_t*)&expressions_params[src.paramsIdx][src.col];
+        out1 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 1] : nullptr;
+        out2 = (src.dim >= 3) ? (gl64_t*)&expressions_params[src.paramsIdx][src.col + 2] : nullptr;
+        return;
+    }
+
+    // Polynomial data: use dParams directly (same as original load__)
+    uint64_t r = row + threadIdx.x;
+    uint64_t logicalRow = isCyclic ? (r + src.stride) % domainSize : (r + src.stride);
+    const bool usePack256 = !isCyclic && src.stride == 0 && blockDim.x == TILE_HEIGHT;
+
+    // zi
+    if (src.paramsIdx == 4) {
+        out0 = (gl64_t*)&dParams->aux_trace[dArgs->zi_offset + (src.col - 1) * domainSize + row + threadIdx.x];
+        out1 = nullptr; out2 = nullptr;
+        return;
+    }
+
+    // constPols (type 0)
+    if (src.paramsIdx == 0) {
+        const Goldilocks::Element* basePtr = dExpsArgs->domainExtended
+            ? dParams->pConstPolsExtendedTreeAddress : dParams->pConstPolsAddress;
+        uint64_t nCols0 = dArgs->mapSectionsN[0];
+        uint64_t pos = usePack256 ? getBufferOffset_pack256(row, src.col, domainSize, nCols0)
+                                  : getBufferOffset(logicalRow, src.col, domainSize, nCols0);
+        out0 = (gl64_t*)&basePtr[pos];
+        out1 = nullptr; out2 = nullptr;
+        return;
+    }
+
+    // Trace/aux_trace (types 1-3)
+    if (src.paramsIdx >= 1 && src.paramsIdx <= 3) {
+        uint64_t offset = dExpsArgs->mapOffsetsExps[src.paramsIdx];
+        uint64_t nCols = dArgs->mapSectionsN[src.paramsIdx];
+
+        if (src.paramsIdx == 1 && !dExpsArgs->domainExtended) {
+            uint64_t pos = usePack256 ? getBufferOffset_pack256(row, src.col, domainSize, nCols)
+                                      : getBufferOffset(logicalRow, src.col, domainSize, nCols);
+            out0 = (gl64_t*)&dParams->trace[pos];
+            out1 = nullptr; out2 = nullptr;
+            return;
+        }
+
+        if (src.dim == 3 && (src.col & 3) <= 1) {
+            uint64_t pos0 = usePack256 ? getBufferOffset_pack256(row, src.col, domainSize, nCols)
+                                       : getBufferOffset(logicalRow, src.col, domainSize, nCols);
+            out0 = (gl64_t*)&dParams->aux_trace[offset + pos0];
+            out1 = (gl64_t*)&dParams->aux_trace[offset + pos0 + TILE_HEIGHT];
+            out2 = (gl64_t*)&dParams->aux_trace[offset + pos0 + 2 * TILE_HEIGHT];
+            return;
+        }
+
+        for (uint64_t d = 0; d < src.dim; d++) {
+            uint64_t pos_ = usePack256 ? getBufferOffset_pack256(row, src.col + d, domainSize, nCols)
+                                       : getBufferOffset(logicalRow, src.col + d, domainSize, nCols);
+            if (d == 0) out0 = (gl64_t*)&dParams->aux_trace[offset + pos_];
+            if (d == 1) out1 = (gl64_t*)&dParams->aux_trace[offset + pos_];
+            if (d == 2) out2 = (gl64_t*)&dParams->aux_trace[offset + pos_];
+        }
+        return;
+    }
+
+    // Custom commits (type 5+)
+    uint64_t idx = src.paramsIdx - (dArgs->nStages + 4);
+    uint64_t cOffset = dExpsArgs->mapOffsetsCustomExps[idx];
+    uint64_t cNCols = dArgs->mapSectionsNCustomFixed[idx];
+    uint64_t pos = getBufferOffset(logicalRow, src.col, domainSize, cNCols);
+    out0 = (gl64_t*)&dParams->pCustomCommitsFixed[cOffset + pos];
+    out1 = nullptr; out2 = nullptr;
+}
+
+// Pre-decoded expression evaluator kernel: uses pre-resolved metadata
+// Eliminates ops/args array reads and load__ type-branching
+template<bool IsCyclic>
+__device__ __forceinline__ void computeExpression_predecoded_chunk_(
+    StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs,
+    Goldilocks::Element **expressions_params,
+    uint32_t bufferCommitsSize, uint64_t i,
+    const PreDecodedOpGPU * __restrict__ predecOps, uint32_t nOps)
+{
+    gl64_t *a0, *a1, *a2, *b0, *b1, *b2;
+    gl64_t *res = nullptr;
+    uint64_t domainSize = d_expsArgs->domainSize;
+
+    for (uint32_t kk = 0; kk < nOps; ++kk) {
+        const PreDecodedOpGPU &op = predecOps[kk];
+
+        load_predecoded_gpu_(op.src[0], d_deviceArgs, d_expsArgs, d_params, expressions_params, i, domainSize, IsCyclic, a0, a1, a2);
+        load_predecoded_gpu_(op.src[1], d_deviceArgs, d_expsArgs, d_params, expressions_params, i, domainSize, IsCyclic, b0, b1, b2);
+
+        switch (op.dimCombo) {
+        case 0:
+            res = (gl64_t*)&expressions_params[bufferCommitsSize][op.destIdx * blockDim.x];
+            op_gpu_p2(op.arithOp, res, a0, b0);
+            break;
+        case 1:
+            res = (gl64_t*)&expressions_params[bufferCommitsSize + 1][op.destIdx * blockDim.x];
+            op_31_gpu_p2(op.arithOp, res, a0, a1, a2, b0);
+            break;
+        case 2:
+            res = (gl64_t*)&expressions_params[bufferCommitsSize + 1][op.destIdx * blockDim.x];
+            op_33_gpu_p2(op.arithOp, res, a0, a1, a2, b0, b1, b2);
+            break;
+        }
+    }
+
+    storePolynomial__(d_expsArgs, (Goldilocks::Element *)res, i);
+}
+
+__global__ void computeExpression_predecoded_(StepsParams *d_params, DeviceArguments *d_deviceArgs,
+    ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams,
+    PreDecodedOpGPU *d_predecOps, uint32_t nPredecOps)
+{
+    int chunk_idx = blockIdx.x;
+    uint64_t nchunks = d_expsArgs->domainSize / blockDim.x;
+
+    uint32_t bufferCommitsSize = d_deviceArgs->bufferCommitSize;
+    Goldilocks::Element **expressions_params = (Goldilocks::Element **)scratchpad;
+
+    // Use temp buffers in dynamic shared memory if launch allocated space for them
+    Goldilocks::Element *smem_after_ptrs = scratchpad + 32;
+    uint64_t tmpTotal = d_expsArgs->maxTemp1Size + d_expsArgs->maxTemp3Size;
+    bool useTmpSmem = tmpTotal > 0 && tmpTotal <= 5120;
+
+    if (threadIdx.x == 0) {
+        if (useTmpSmem) {
+            expressions_params[bufferCommitsSize + 0] = smem_after_ptrs;
+            expressions_params[bufferCommitsSize + 1] = smem_after_ptrs + d_expsArgs->maxTemp1Size;
+        } else {
+            expressions_params[bufferCommitsSize + 0] = (&d_params->aux_trace[d_expsArgs->offsetTmp1 + blockIdx.x * d_expsArgs->maxTemp1Size]);
+            expressions_params[bufferCommitsSize + 1] = (&d_params->aux_trace[d_expsArgs->offsetTmp3 + blockIdx.x * d_expsArgs->maxTemp3Size]);
+        }
+        expressions_params[bufferCommitsSize + 2] = d_params->publicInputs;
+        expressions_params[bufferCommitsSize + 3] = d_deviceArgs->numbers;
+        expressions_params[bufferCommitsSize + 4] = d_params->airValues;
+        expressions_params[bufferCommitsSize + 5] = d_params->proofValues;
+        expressions_params[bufferCommitsSize + 6] = d_params->airgroupValues;
+        expressions_params[bufferCommitsSize + 7] = d_params->challenges;
+        expressions_params[bufferCommitsSize + 8] = d_params->evals;
+    }
+    __syncthreads();
+
+    uint64_t k_min_chunk = d_expsArgs->k_min / blockDim.x;
+    uint64_t k_max_chunk = d_expsArgs->k_max / blockDim.x;
+
+    while (chunk_idx < nchunks) {
+        uint64_t i = chunk_idx * blockDim.x;
+        if (chunk_idx < k_min_chunk || chunk_idx >= k_max_chunk) {
+            computeExpression_predecoded_chunk_<true>(d_params, d_deviceArgs, d_expsArgs, expressions_params, bufferCommitsSize, i, d_predecOps, nPredecOps);
+        } else {
+            computeExpression_predecoded_chunk_<false>(d_params, d_deviceArgs, d_expsArgs, expressions_params, bufferCommitsSize, i, d_predecOps, nPredecOps);
+        }
+        chunk_idx += gridDim.x;
+    }
 }
