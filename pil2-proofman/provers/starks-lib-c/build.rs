@@ -21,14 +21,29 @@ fn main() {
     let lib_file = library_folder.join(format!("lib{library_name}.a"));
 
     if !pil2_stark_path.exists() {
-        panic!("Missing `pil2-stark` submodule! Run `git submodule update --init --recursive`");
+        panic!("Missing `pil2-stark` directory! Ensure repository was cloned correctly.");
     }
 
-    // Ensure `git submodule update --init --recursive` runs only if needed.
-    // Skip if pil2-stark is a regular committed directory (not a git submodule).
+    // Ensure pil2-stark submodule content is available (only needed when pil2-stark is a
+    // git submodule rather than a committed directory).
     if !pil2_stark_path.join(".git").exists() && !pil2_stark_path.join("src").exists() {
-        run_command("git", &["submodule", "init"], &pil2_stark_path);
-        run_command("git", &["submodule", "update", "--recursive"], &pil2_stark_path);
+        // Use repo root + explicit submodule path to avoid initializing unrelated submodules.
+        let repo_root = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&pil2_stark_path)
+            .output()
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim().to_string()))
+            .unwrap_or_else(|_| pil2_stark_path.parent().unwrap_or(&pil2_stark_path).to_path_buf());
+        if let Ok(rel) = pil2_stark_path.strip_prefix(&repo_root) {
+            let rel_str = rel.to_string_lossy();
+            run_command(
+                "git",
+                &["submodule", "update", "--init", "--recursive", "--", &rel_str],
+                &repo_root,
+            );
+        } else {
+            run_command("git", &["submodule", "update", "--init", "--recursive"], &pil2_stark_path);
+        }
     }
 
     // For GPU builds, ensure submodules are initialized and blst is compiled
@@ -376,8 +391,15 @@ fn ensure_gpu_submodules_initialized(pil2_stark_path: &Path) {
                 &repo_root,
             );
         } else {
-            // Fallback: init from pil2-stark directory (scoped to its own submodules)
-            run_command("git", &["submodule", "update", "--init", "--recursive"], pil2_stark_path);
+            // Fallback: init only blst and sppark relative to pil2-stark, avoid touching
+            // unrelated submodules (e.g. private ones the user may not have access to).
+            let blst_rel = "external/blst";
+            let sppark_rel = "external/sppark";
+            run_command(
+                "git",
+                &["submodule", "update", "--init", "--recursive", "--", blst_rel, sppark_rel],
+                pil2_stark_path,
+            );
         }
     }
 }
