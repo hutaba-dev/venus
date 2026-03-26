@@ -1745,8 +1745,8 @@ where
                     if cancellation_info_clone.read().unwrap().token.is_cancelled() {
                         break;
                     }
-                    // Use recv_timeout to avoid busy-wait while remaining cancellation-responsive
-                    match contributions_rx_clone.recv_timeout(std::time::Duration::from_millis(50)) {
+                    // Use blocking recv instead of polling try_recv to avoid busy-waiting
+                    match contributions_rx_clone.recv() {
                         Ok(instance_id) => {
                             if instance_id == usize::MAX {
                                 break;
@@ -1770,11 +1770,8 @@ where
                                 memory_handler_clone.to_be_released_buffer(instance_id, false);
                             }
                         }
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                            // Re-check cancellation token on timeout
-                            continue;
-                        }
-                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                        Err(_) => {
+                            // Channel disconnected - exit worker
                             break;
                         }
                     }
