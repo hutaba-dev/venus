@@ -49,14 +49,11 @@ module.exports = async function pilInfo(pil, starkStruct, options = {}) {
             fs.promises.unlink(infoPilFile); 
             fs.promises.unlink(imPolsFile);
         } else {
-            imInfo = calculateIntermediatePolynomials(expressions, res.cExpId, maxDeg, res.qDim, { res, constraints, symbols, options });
+            imInfo = calculateIntermediatePolynomials(expressions, res.cExpId, maxDeg, res.qDim);
         }
         
         newExpressions = imInfo.newExpressions;
         addIntermediatePolynomials(res, newExpressions, constraints, symbols, imInfo.imExps, imInfo.qDeg);
-        if(imInfo.costModel) {
-            res.imPolsCostModel = imInfo.costModel;
-        }
     }
     
     map(res, symbols, newExpressions, constraints, options);       
@@ -113,13 +110,12 @@ module.exports = async function pilInfo(pil, starkStruct, options = {}) {
     console.log(`SUMMARY | ${pil.name} | ${summary}`);
     console.log("------------------------------------------------------------")
         
-    let stats = {summary, intermediatePolynomials: res.imPolsInfo, imPolsCostModel: res.imPolsCostModel};
+    let stats = {summary, intermediatePolynomials: res.imPolsInfo};
     
     delete res.nCommitments;
     delete res.imPolsStages;
     delete res.pilPower;
     delete res.imPolsInfo;
-    delete res.imPolsCostModel;
 
     return {pilInfo: res, expressionsInfo, verifierInfo, stats};
 }
