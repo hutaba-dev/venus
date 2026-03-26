@@ -416,8 +416,8 @@ def generate_all(dump_dir, out_dir):
     for path in dump_files:
         dump = read_dump(path)
         # Only generate for register-feasible expressions with reasonable size
-        if dump['nTemp1'] > 30 or dump['nOps'] > 500:
-            print(f"Skipped {path}: nTemp1={dump['nTemp1']} too large for registers")
+        if dump['nTemp1'] > 30 or dump['nOps'] > 2100:
+            print(f"Skipped {path}: nOps={dump['nOps']} nTemp1={dump['nTemp1']} exceeds limits")
             continue
         expId = os.path.basename(path).replace('expr_dump_', '').replace('.bin', '')
         fname = f'gen_eval_{expId}.cuh'

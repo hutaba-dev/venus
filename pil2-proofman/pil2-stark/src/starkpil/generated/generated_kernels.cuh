@@ -1,8 +1,17 @@
 // Auto-generated kernel declarations for host-side dispatch
 // Each kernel is compiled in its own .cu file for optimal register allocation
 
+// expId=1020 nOps=799 nTemp1=5 nTemp3=5
+__global__ void computeExpression_gen_1020_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=1052 nOps=771 nTemp1=4 nTemp3=5
+__global__ void computeExpression_gen_1052_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
 // expId=136 nOps=96 nTemp1=3 nTemp3=5
 __global__ void computeExpression_gen_136_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=1638 nOps=1026 nTemp1=7 nTemp3=5
+__global__ void computeExpression_gen_1638_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
 
 // expId=186 nOps=146 nTemp1=4 nTemp3=5
 __global__ void computeExpression_gen_186_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
@@ -15,6 +24,9 @@ __global__ void computeExpression_gen_239_(StepsParams *d_params, DeviceArgument
 
 // expId=265 nOps=206 nTemp1=5 nTemp3=5
 __global__ void computeExpression_gen_265_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=2755 nOps=2017 nTemp1=5 nTemp3=5
+__global__ void computeExpression_gen_2755_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
 
 // expId=302 nOps=184 nTemp1=1 nTemp3=5
 __global__ void computeExpression_gen_302_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
@@ -43,15 +55,31 @@ __global__ void computeExpression_gen_518_(StepsParams *d_params, DeviceArgument
 // expId=632 nOps=486 nTemp1=7 nTemp3=5
 __global__ void computeExpression_gen_632_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
 
+// expId=712 nOps=510 nTemp1=5 nTemp3=5
+__global__ void computeExpression_gen_712_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=717 nOps=548 nTemp1=5 nTemp3=5
+__global__ void computeExpression_gen_717_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=856 nOps=673 nTemp1=6 nTemp3=5
+__global__ void computeExpression_gen_856_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
+// expId=981 nOps=728 nTemp1=8 nTemp3=5
+__global__ void computeExpression_gen_981_(StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams);
+
 // Host-side dispatch by expId
 inline bool dispatchGeneratedKernel(uint64_t expId, dim3 nBlocks, dim3 nThreads, size_t sharedMem, cudaStream_t stream,
     StepsParams *d_params, DeviceArguments *d_deviceArgs, ExpsArguments *d_expsArgs, DestParamsGPU *d_destParams) {
     switch (expId) {
+    case 1020: computeExpression_gen_1020_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 1052: computeExpression_gen_1052_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 136: computeExpression_gen_136_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 1638: computeExpression_gen_1638_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 186: computeExpression_gen_186_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 212: computeExpression_gen_212_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 239: computeExpression_gen_239_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 265: computeExpression_gen_265_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 2755: computeExpression_gen_2755_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 302: computeExpression_gen_302_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 319: computeExpression_gen_319_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 347: computeExpression_gen_347_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
@@ -61,6 +89,10 @@ inline bool dispatchGeneratedKernel(uint64_t expId, dim3 nBlocks, dim3 nThreads,
     case 51: computeExpression_gen_51_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 518: computeExpression_gen_518_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     case 632: computeExpression_gen_632_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 712: computeExpression_gen_712_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 717: computeExpression_gen_717_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 856: computeExpression_gen_856_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
+    case 981: computeExpression_gen_981_<<<nBlocks, nThreads, sharedMem, stream>>>(d_params, d_deviceArgs, d_expsArgs, d_destParams); return true;
     default: return false;
     }
 }

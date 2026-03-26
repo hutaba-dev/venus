@@ -1,11 +1,15 @@
 // Auto-generated dispatch header for expression evaluators
 // Include all generated evaluator files
 
+#include "gen_eval_1020.cuh"
+#include "gen_eval_1052.cuh"
 #include "gen_eval_136.cuh"
+#include "gen_eval_1638.cuh"
 #include "gen_eval_186.cuh"
 #include "gen_eval_212.cuh"
 #include "gen_eval_239.cuh"
 #include "gen_eval_265.cuh"
+#include "gen_eval_2755.cuh"
 #include "gen_eval_302.cuh"
 #include "gen_eval_319.cuh"
 #include "gen_eval_347.cuh"
@@ -15,6 +19,10 @@
 #include "gen_eval_51.cuh"
 #include "gen_eval_518.cuh"
 #include "gen_eval_632.cuh"
+#include "gen_eval_712.cuh"
+#include "gen_eval_717.cuh"
+#include "gen_eval_856.cuh"
+#include "gen_eval_981.cuh"
 
 // Dispatch function: tries generated evaluator, returns false if no match
 template<bool IsCyclic>
@@ -26,8 +34,20 @@ __device__ __forceinline__ bool dispatch_generated_eval(
     uint32_t bufferCommitsSize, uint64_t row,
     uint32_t nOps, uint32_t nTemp1, uint32_t nTemp3)
 {
+    if (nOps == 799 && nTemp1 == 5 && nTemp3 == 5) {
+        eval_expr_805e348b<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 771 && nTemp1 == 4 && nTemp3 == 5) {
+        eval_expr_9a44e4f6<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
     if (nOps == 96 && nTemp1 == 3 && nTemp3 == 5) {
         eval_expr_b2412d29<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 1026 && nTemp1 == 7 && nTemp3 == 5) {
+        eval_expr_831d811b<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
         return true;
     }
     if (nOps == 146 && nTemp1 == 4 && nTemp3 == 5) {
@@ -44,6 +64,10 @@ __device__ __forceinline__ bool dispatch_generated_eval(
     }
     if (nOps == 206 && nTemp1 == 5 && nTemp3 == 5) {
         eval_expr_b2f2c7b9<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 2017 && nTemp1 == 5 && nTemp3 == 5) {
+        eval_expr_e45c5827<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
         return true;
     }
     if (nOps == 184 && nTemp1 == 1 && nTemp3 == 5) {
@@ -80,6 +104,22 @@ __device__ __forceinline__ bool dispatch_generated_eval(
     }
     if (nOps == 486 && nTemp1 == 7 && nTemp3 == 5) {
         eval_expr_4a7a1ff2<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 510 && nTemp1 == 5 && nTemp3 == 5) {
+        eval_expr_54872b67<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 548 && nTemp1 == 5 && nTemp3 == 5) {
+        eval_expr_ac8c88ed<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 673 && nTemp1 == 6 && nTemp3 == 5) {
+        eval_expr_9575516e<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
+        return true;
+    }
+    if (nOps == 728 && nTemp1 == 8 && nTemp3 == 5) {
+        eval_expr_d3f5e199<IsCyclic>(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, row);
         return true;
     }
     return false;
