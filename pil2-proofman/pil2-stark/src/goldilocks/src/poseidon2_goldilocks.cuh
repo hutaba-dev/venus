@@ -362,6 +362,9 @@ public:
 
     void static merkletreeCoalescedBlocks(uint32_t arity, uint64_t *d_tree, uint64_t *d_input, uint64_t num_cols, uint64_t num_rows, cudaStream_t stream, int nThreads = 0, uint64_t dim = 1);
 
+    // Hash from blocked-row-major layout (NTT output) without requiring tiled transpose first
+    void static merkletreeRowMajor(uint32_t arity, uint64_t *d_tree, uint64_t *d_input, uint64_t num_cols, uint64_t num_rows, cudaStream_t stream);
+
 
     void static hashFullResult(uint64_t * output, const uint64_t * input);
 
@@ -529,12 +532,54 @@ __global__ void linearHashGPU(uint64_t *__restrict__ output, uint64_t *__restric
     poseidon2_store<RATE_T, CAPACITY_T, SPONGE_WIDTH_T, N_FULL_ROUNDS_TOTAL_T, N_PARTIAL_ROUNDS_T>(output, CAPACITY_T, 1);
 }
 
+// Leaf hash reading from blocked-row-major layout (getBufferOffsetRowMajor).
+// This matches NTT output layout, allowing Merkle hashing BEFORE the tiled transpose.
+template<uint32_t RATE_T, uint32_t CAPACITY_T, uint32_t SPONGE_WIDTH_T, uint32_t N_FULL_ROUNDS_TOTAL_T, uint32_t N_PARTIAL_ROUNDS_T>
+__global__ void linearHashGPURowMajor(uint64_t *__restrict__ output, uint64_t *__restrict__ input, uint32_t num_cols, uint32_t num_rows)
+{
+#pragma unroll
+    for (uint32_t i = 0; i < CAPACITY_T; i++)
+        scratchpad[(i + RATE_T) * blockDim.x + threadIdx.x] = gl64_t(uint64_t(0));
+
+    uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    for (uint32_t col = 0;;)
+    {
+        uint32_t delta = min(num_cols - col, RATE_T);
+        gl64_t r[RATE_T];
+        #pragma unroll
+        for (uint32_t i = 0; i < RATE_T; i++) {
+            if (i < delta && row < num_rows) {
+                r[i] = input[getBufferOffsetRowMajor(row, col + i, num_rows, num_cols)];
+            } else {
+                r[i] = gl64_t(uint64_t(0));
+            }
+        }
+        __syncwarp();
+        for (uint32_t i = 0; i < RATE_T; i++)
+            scratchpad[i * blockDim.x + threadIdx.x] = r[i];
+        __syncwarp();
+        poseidon2_hash<RATE_T, CAPACITY_T, SPONGE_WIDTH_T, N_FULL_ROUNDS_TOTAL_T, N_PARTIAL_ROUNDS_T>();
+        if ((col += RATE_T) >= num_cols)
+            break;
+        gl64_t tmp[CAPACITY_T];
+        #pragma unroll
+        for (uint32_t i = 0; i < CAPACITY_T; i++)
+            tmp[i] = scratchpad[i * blockDim.x + threadIdx.x];
+        __syncwarp();
+        #pragma unroll
+        for (uint32_t i = 0; i < CAPACITY_T; i++)
+            scratchpad[(i + RATE_T) * blockDim.x + threadIdx.x] = tmp[i];
+        __syncwarp();
+    }
+    poseidon2_store<RATE_T, CAPACITY_T, SPONGE_WIDTH_T, N_FULL_ROUNDS_TOTAL_T, N_PARTIAL_ROUNDS_T>(output, CAPACITY_T, 1);
+}
+
 template<uint32_t RATE_T, uint32_t CAPACITY_T, uint32_t SPONGE_WIDTH_T, uint32_t N_FULL_ROUNDS_TOTAL_T, uint32_t N_PARTIAL_ROUNDS_T>
 __global__ void linearHashGPUTiles(uint64_t *__restrict__ output, uint64_t *__restrict__ input, uint32_t num_cols, uint32_t num_rows)
 {
 #pragma unroll
     for (uint32_t i = 0; i < CAPACITY_T; i++)
-        scratchpad[(i + RATE_T) * blockDim.x + threadIdx.x] = gl64_t(uint64_t(0)); 
+        scratchpad[(i + RATE_T) * blockDim.x + threadIdx.x] = gl64_t(uint64_t(0));
 
     poseidon2_hash_loop_blocks<RATE_T, CAPACITY_T, SPONGE_WIDTH_T, N_FULL_ROUNDS_TOTAL_T, N_PARTIAL_ROUNDS_T>(input, num_cols, num_rows);
     poseidon2_store<RATE_T, CAPACITY_T, SPONGE_WIDTH_T, N_FULL_ROUNDS_TOTAL_T, N_PARTIAL_ROUNDS_T>(output, CAPACITY_T, 1);

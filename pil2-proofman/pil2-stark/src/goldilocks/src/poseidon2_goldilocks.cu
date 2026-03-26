@@ -129,6 +129,37 @@ void Poseidon2GoldilocksGPU<SPONGE_WIDTH_T>::merkletreeCoalesced(uint32_t arity,
 }
 
 
+template<uint32_t SPONGE_WIDTH_T>
+void Poseidon2GoldilocksGPU<SPONGE_WIDTH_T>::merkletreeRowMajor(uint32_t arity, uint64_t *d_tree, uint64_t *d_input, uint64_t num_cols, uint64_t num_rows, cudaStream_t stream)
+{
+    if (num_rows == 0) return;
+
+    u32 actual_tpb = TPB;
+    u32 actual_blks = (num_rows + TPB - 1) / TPB;
+    if (num_rows < TPB) { actual_tpb = num_rows; actual_blks = 1; }
+
+    // Leaf hash from blocked-row-major layout (matches NTT output)
+    linearHashGPURowMajor<RATE, CAPACITY, SPONGE_WIDTH, N_FULL_ROUNDS_TOTAL, N_PARTIAL_ROUNDS><<<actual_blks, actual_tpb, actual_tpb * SPONGE_WIDTH * 8, stream>>>(d_tree, d_input, num_cols, num_rows);
+    CHECKCUDAERR(cudaGetLastError());
+
+    // Internal Merkle tree levels (same as merkletreeCoalescedBlocks)
+    uint64_t pending = num_rows;
+    uint64_t nextN = (pending + (arity - 1)) / arity;
+    uint64_t nextIndex = 0;
+    while (pending > 1) {
+        uint64_t extraZeros = (arity - (pending % arity)) % arity;
+        if (extraZeros > 0)
+            CHECKCUDAERR(cudaMemsetAsync((uint64_t *)(d_tree + nextIndex + pending * CAPACITY), 0, extraZeros * CAPACITY * sizeof(uint64_t), stream));
+        if (nextN < TPB) { actual_tpb = nextN; actual_blks = 1; }
+        else { actual_tpb = TPB; actual_blks = (nextN + TPB - 1) / TPB; }
+        hash_gpu_3<RATE, CAPACITY, SPONGE_WIDTH, N_FULL_ROUNDS_TOTAL, N_PARTIAL_ROUNDS><<<actual_blks, actual_tpb, 0, stream>>>(nextN, nextIndex, pending + extraZeros, d_tree);
+        nextIndex += (pending + extraZeros) * CAPACITY;
+        pending = (pending + (arity - 1)) / arity;
+        nextN = (pending + (arity - 1)) / arity;
+    }
+    CHECKCUDAERR(cudaGetLastError());
+}
+
 template<uint32_t RATE_T, uint32_t CAPACITY_T, uint32_t SPONGE_WIDTH_T, uint32_t N_FULL_ROUNDS_TOTAL_T, uint32_t N_PARTIAL_ROUNDS_T>
 __global__ void hash_gpu_16(uint64_t* data, int N)
 {

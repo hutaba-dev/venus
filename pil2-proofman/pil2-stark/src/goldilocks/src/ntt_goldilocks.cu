@@ -399,30 +399,23 @@ void NTT_Goldilocks_GPU::LDE_MerkleTree_GPU(Goldilocks::Element *d_tree, gl64_t 
     ntt_cuda_blocks_par(d_dst_ntt_, d_r, d_fwd_twiddle_factors, d_inv_twiddle_factors, n_bits, n_bits_ext, nCols, true, true, stream, maxLogDomainSize); 
     ntt_cuda_blocks_par(d_dst_ntt_, d_r, d_fwd_twiddle_factors, d_inv_twiddle_factors, n_bits_ext, n_bits_ext, nCols, false, false, stream, maxLogDomainSize);
 #endif
-    dim3 grid1((ext_size + block.x - 1) / block.x,
-             (nCols + block.y - 1) / block.y);
-    transposeSubBlocksInPlace<<<grid1, block, sharedMemSize, stream>>>(d_dst_ntt_, ext_size, nCols);
     TimerStopCategoryGPU(timer, NTT);
+
+    // Hash FIRST from blocked-row-major NTT output (before transpose)
     TimerStartCategoryGPU(timer, MERKLE_TREE);
-    switch (arity)
-    {
-    case 2:
-        Poseidon2GoldilocksGPU<8>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_dst_ntt_, nCols, ext_size, stream);
-        break;
-    case 3:
-        Poseidon2GoldilocksGPU<12>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_dst_ntt_, nCols, ext_size, stream);
-        break;
-    case 4:
-        Poseidon2GoldilocksGPU<16>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_dst_ntt_, nCols, ext_size, stream);
-        break;
-    default:
-#ifndef __GOLDILOCKS_ENV__
-        zklog.error("MerkleTreeGL::calculateRootFromProof: Unsupported arity");
-        exitProcess();
-#endif
-        exit(-1);
+    switch (arity) {
+    case 2: Poseidon2GoldilocksGPU<8>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_dst_ntt_, nCols, ext_size, stream); break;
+    case 3: Poseidon2GoldilocksGPU<12>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_dst_ntt_, nCols, ext_size, stream); break;
+    case 4: Poseidon2GoldilocksGPU<16>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_dst_ntt_, nCols, ext_size, stream); break;
+    default: exit(-1);
     }
     TimerStopCategoryGPU(timer, MERKLE_TREE);
+
+    // Transpose AFTER hash for downstream consumers (expression evaluator, FRI)
+    TimerStartCategoryGPU(timer, NTT);
+    dim3 grid1((ext_size + block.x - 1) / block.x, (nCols + block.y - 1) / block.y);
+    transposeSubBlocksInPlace<<<grid1, block, sharedMemSize, stream>>>(d_dst_ntt_, ext_size, nCols);
+    TimerStopCategoryGPU(timer, NTT);
 }
 
 void NTT_Goldilocks_GPU::INTT_inplace(gl64_t *dst, u_int64_t n_bits, u_int64_t nCols, cudaStream_t stream)
