@@ -144,7 +144,7 @@ def gen_load(src_type, src_arg, src_offset, dim, dump, var_prefix):
 
 
 def find_chunk_boundaries(dump, target_chunk_size=1500):
-    """Find optimal chunk boundaries where temp liveness is minimal.
+    """Find optimal chunk boundaries minimizing live temp count.
     Returns list of (start, end) tuples for each chunk."""
     nOps = dump['nOps']
     args = dump['args']
@@ -153,58 +153,73 @@ def find_chunk_boundaries(dump, target_chunk_size=1500):
     TMP1_TYPE = base
     TMP3_TYPE = base + 1
 
-    # For each op, track which temps are written and read
-    # Use interval-based liveness: a temp is live from its write to its last read before next write
-    # Compute per-op liveness score (number of live registers)
-    live_score = [0] * nOps
+    # Compute per-boundary liveness using interval tracking.
+    # For each temp slot, track (last_def, last_use) intervals.
+    # A temp is live at boundary b if it was defined at d <= b and used at u > b.
 
-    # Track write->read intervals for each (type, idx) pair
-    # Simple approach: sweep forward, tracking last write position per temp
-    last_write_pos = {}  # (type, idx) -> op index of last write
-    read_after_write = {}  # (type, idx) -> set of op indices where read after last_write
+    # Forward pass: for each temp, find all def-use intervals
+    # Key insight: a definition kills the previous interval and starts a new one
+    intervals = {}  # (type, idx) -> (def_op, last_use_op)
+
+    # First pass: track definitions and last uses
+    temp_defs = {}   # (type, idx) -> list of def positions
+    temp_uses = {}   # (type, idx) -> list of use positions
 
     for i in range(nOps):
         b = i * 8
-        dest_idx = args[b + 1]
         op_type = ops[i]
         dest_type = TMP1_TYPE if op_type == 0 else TMP3_TYPE
+        dest_idx = args[b + 1]
 
-        # Record reads BEFORE processing the write (for correct ordering)
+        # Record reads
         for s in range(2):
             st = args[b + 2 + s * 3]
             sa = args[b + 3 + s * 3]
             if st == TMP1_TYPE or st == TMP3_TYPE:
                 key = (st, sa)
-                if key in last_write_pos:
-                    if key not in read_after_write:
-                        read_after_write[key] = set()
-                    read_after_write[key].add(i)
+                if key not in temp_uses:
+                    temp_uses[key] = []
+                temp_uses[key].append(i)
 
-        # Record write
-        key = (dest_type, dest_idx)
-        last_write_pos[key] = i
-        read_after_write.pop(key, None)  # Reset reads for new definition
-
-        # For dim3 writes, also record the +1 and +2 slots
+        # Record writes
+        keys = [(dest_type, dest_idx)]
         if op_type >= 1:
-            for offset in [1, 2]:
-                key2 = (dest_type, dest_idx + offset)
-                last_write_pos[key2] = i
-                read_after_write.pop(key2, None)
+            keys.extend([(dest_type, dest_idx + 1), (dest_type, dest_idx + 2)])
+        for key in keys:
+            if key not in temp_defs:
+                temp_defs[key] = []
+            temp_defs[key].append(i)
 
-    # Now compute liveness at each boundary point (between ops i and i+1)
-    # A temp is live at boundary i if: written at w <= i, and read at some r > i
-    # Rebuild with a simpler sweep
-    for i in range(nOps):
-        live1 = 0
-        live3 = 0
-        # This is O(nOps * nTemps) which is too slow for 72K ops with 453 temps
-        # Use a different approach: event-based liveness
-        pass
+    # Build def-use intervals: for each definition, find the last use before next def
+    all_intervals = []  # list of (start, end) where temp is live from start to end
+    for key in set(list(temp_defs.keys()) + list(temp_uses.keys())):
+        defs = sorted(temp_defs.get(key, []))
+        uses = sorted(temp_uses.get(key, []))
+        if not defs or not uses:
+            continue
+        for di, d in enumerate(defs):
+            next_d = defs[di + 1] if di + 1 < len(defs) else nOps
+            # Find last use of this definition: max use in [d, next_d)
+            last_u = -1
+            for u in uses:
+                if d <= u < next_d:
+                    last_u = u
+            if last_u > d:
+                # tmp1 counts 1 register, tmp3 counts 3
+                weight = 1 if key[0] == TMP1_TYPE else 3
+                all_intervals.append((d, last_u, weight))
 
-    # Simpler approach: just look for points where all recent ops only use tmp1_0 and tmp3_0..2
-    # and those are freshly written (not carried from before)
-    # Use a heuristic: check every target_chunk_size ops for the nearest low-complexity point
+    # Compute liveness score at each boundary using sweep line
+    # (only compute at candidate boundary positions to save time)
+    def liveness_at(boundary):
+        """Count live registers at boundary point (between ops boundary-1 and boundary)."""
+        score = 0
+        for start, end, weight in all_intervals:
+            if start < boundary <= end:
+                score += weight
+        return score
+
+    # Find boundaries with minimum liveness
     boundaries = []
     pos = 0
     while pos < nOps:
@@ -212,28 +227,17 @@ def find_chunk_boundaries(dump, target_chunk_size=1500):
         if end >= nOps:
             boundaries.append((pos, nOps))
             break
-        # Search for a good boundary in [end-200, end+200]
         search_start = max(pos + 1, end - 200)
         search_end = min(nOps, end + 200)
         best = end
-        best_score = 999
-
+        best_live = liveness_at(end)
         for j in range(search_start, search_end):
-            # Check if op j starts a "fresh" sequence (reads no temps from before)
-            b = j * 8
-            s0t, s0a = args[b + 2], args[b + 3]
-            s1t, s1a = args[b + 5], args[b + 6]
-            score = 0
-            if s0t == TMP1_TYPE or s0t == TMP3_TYPE:
-                score += 1
-            if s1t == TMP1_TYPE or s1t == TMP3_TYPE:
-                score += 1
-            if score < best_score:
-                best_score = score
+            live = liveness_at(j)
+            if live < best_live:
+                best_live = live
                 best = j
-                if score == 0:
-                    break  # Perfect boundary - no temp reads
-
+                if live == 0:
+                    break
         boundaries.append((pos, best))
         pos = best
 
@@ -242,7 +246,8 @@ def find_chunk_boundaries(dump, target_chunk_size=1500):
 
 def collect_live_temps_at_boundary(dump, boundary_op):
     """Determine which tmp indices are live at a chunk boundary.
-    A temp is live if it was written before the boundary and read after it."""
+    A temp is live if it was defined before the boundary and used after it
+    WITHOUT being redefined before the use."""
     nOps = dump['nOps']
     args = dump['args']
     ops = dump['ops']
@@ -250,37 +255,44 @@ def collect_live_temps_at_boundary(dump, boundary_op):
     TMP1_TYPE = base
     TMP3_TYPE = base + 1
 
-    # Track last write before boundary and first read after boundary per temp
-    writes_before = {}  # (type, idx) -> last write op before boundary
-    reads_after = set()  # set of (type, idx) read after boundary
-
+    # Find the LAST definition of each temp slot before boundary
+    last_def_before = {}  # (type, idx) -> op index
     for i in range(boundary_op):
         b = i * 8
         dest_idx = args[b + 1]
         op_type = ops[i]
         dest_type = TMP1_TYPE if op_type == 0 else TMP3_TYPE
-        writes_before[(dest_type, dest_idx)] = i
+        last_def_before[(dest_type, dest_idx)] = i
         if op_type >= 1:
-            writes_before[(dest_type, dest_idx + 1)] = i
-            writes_before[(dest_type, dest_idx + 2)] = i
+            last_def_before[(dest_type, dest_idx + 1)] = i
+            last_def_before[(dest_type, dest_idx + 2)] = i
 
-    for i in range(boundary_op, nOps):
-        b = i * 8
-        for s in range(2):
-            st = args[b + 2 + s * 3]
-            sa = args[b + 3 + s * 3]
-            if (st == TMP1_TYPE or st == TMP3_TYPE) and (st, sa) in writes_before:
-                reads_after.add((st, sa))
-        # Stop tracking after the temp is overwritten
-        dest_idx = args[b + 1]
-        op_type = ops[i]
-        dest_type = TMP1_TYPE if op_type == 0 else TMP3_TYPE
-        writes_before.pop((dest_type, dest_idx), None)
-        if op_type >= 1:
-            writes_before.pop((dest_type, dest_idx + 1), None)
-            writes_before.pop((dest_type, dest_idx + 2), None)
+    # For each temp with a definition before boundary, check if it's used
+    # after boundary before being redefined
+    live = set()
+    for key, def_op in last_def_before.items():
+        for i in range(boundary_op, nOps):
+            b = i * 8
+            # Check if this op uses the temp
+            for s in range(2):
+                st = args[b + 2 + s * 3]
+                sa = args[b + 3 + s * 3]
+                if (st, sa) == key:
+                    live.add(key)
+                    break
+            if key in live:
+                break
+            # Check if this op redefines the temp (kills it)
+            dest_idx = args[b + 1]
+            op_type = ops[i]
+            dest_type = TMP1_TYPE if op_type == 0 else TMP3_TYPE
+            kill_keys = [(dest_type, dest_idx)]
+            if op_type >= 1:
+                kill_keys.extend([(dest_type, dest_idx + 1), (dest_type, dest_idx + 2)])
+            if key in kill_keys:
+                break  # Redefined before use -> not live
 
-    return reads_after
+    return live
 
 
 def generate_evaluator(dump, out_path):
@@ -503,23 +515,31 @@ def generate_chunked_evaluator(dump, out_path):
     fp_data += struct.pack(f'<{min(32, len(args))}H', *args[:min(32, len(args))])
     fp = hashlib.md5(fp_data).hexdigest()[:8]
 
-    # Find which tmp3 slots are used across the entire expression
-    # (these are the accumulator slots that flow between chunks)
-    all_tmp3_written = set()
-    all_tmp3_read = set()
+    TMP1_TYPE = base
     TMP3_TYPE = base + 1
-    for i in range(nOps):
-        b = i * 8
-        op_type = ops[i]
-        if op_type >= 1:
-            all_tmp3_written.add(args[b + 1])
-            all_tmp3_written.add(args[b + 1] + 1)
-            all_tmp3_written.add(args[b + 1] + 2)
-        for s in range(2):
-            if args[b + 2 + s*3] == TMP3_TYPE:
-                all_tmp3_read.add(args[b + 3 + s*3])
-    all_tmp3_slots = sorted(all_tmp3_written | all_tmp3_read)
-    nTmp3Slots = max(all_tmp3_slots) + 1 if all_tmp3_slots else 0
+
+    # Compute live temps at each chunk boundary for correct state threading
+    boundary_live_sets = {}  # boundary_op -> set of (type, idx)
+    for _, chunk_end in boundaries:
+        if chunk_end < nOps:
+            live = collect_live_temps_at_boundary(dump, chunk_end)
+            boundary_live_sets[chunk_end] = live
+            print(f"  Boundary at op {chunk_end}: {len(live)} live temps "
+                  f"({sum(1 for t,_ in live if t==TMP1_TYPE)} tmp1, "
+                  f"{sum(1 for t,_ in live if t==TMP3_TYPE)} tmp3)")
+
+    # Collect ALL tmp slots that are ever live at ANY boundary
+    all_live_tmp1 = set()
+    all_live_tmp3 = set()
+    for live_set in boundary_live_sets.values():
+        for typ, idx in live_set:
+            if typ == TMP1_TYPE:
+                all_live_tmp1.add(idx)
+            elif typ == TMP3_TYPE:
+                all_live_tmp3.add(idx)
+    all_live_tmp1 = sorted(all_live_tmp1)
+    all_live_tmp3 = sorted(all_live_tmp3)
+    print(f"  Total cross-boundary state: {len(all_live_tmp1)} tmp1 + {len(all_live_tmp3)} tmp3 slots")
 
     L = []
     L.append(f'// Auto-generated CHUNKED expression evaluator for {nOps}-op expression')
@@ -569,11 +589,14 @@ def generate_chunked_evaluator(dump, out_path):
         L.append('    Goldilocks::Element **expressions_params,')
         L.append('    uint32_t bufferCommitsSize,')
         L.append('    const ChunkedEvalContext& ctx,')
-        # Pass tmp3 accumulator slots
-        for t in sorted(all_tmp3_slots):
+        # Pass ALL cross-boundary live state (tmp1 + tmp3)
+        for t in all_live_tmp1:
+            L.append(f'    gl64_t& tmp1_{t},')
+        for t in all_live_tmp3:
             L.append(f'    gl64_t& tmp3_{t},')
         # Remove trailing comma from last param
-        L[-1] = L[-1].rstrip(',')
+        if L[-1].endswith(','):
+            L[-1] = L[-1].rstrip(',')
         L.append(')')
         L.append('{')
 
@@ -587,8 +610,9 @@ def generate_chunked_evaluator(dump, out_path):
         for st in sorted(stage_types_used):
             L.append(f'    const uint64_t nCols_{st} = ctx.nCols_{st};')
 
-        # Declare local tmp1 variables
-        for t in sorted(chunk_tmp1_used):
+        # Declare LOCAL tmp1 variables (those not passed as cross-boundary state)
+        local_tmp1 = sorted(chunk_tmp1_used - set(all_live_tmp1))
+        for t in local_tmp1:
             L.append(f'    gl64_t tmp1_{t} = gl64_t(uint64_t(0));')
         L.append('')
 
@@ -691,15 +715,18 @@ def generate_chunked_evaluator(dump, out_path):
     for st in sorted(stage_types_used):
         L.append(f'    ctx.nCols_{st} = dArgs->mapSectionsN[{st}];')
 
-    # Initialize tmp3 accumulator slots
-    for t in sorted(all_tmp3_slots):
+    # Initialize ALL cross-boundary state (tmp1 + tmp3)
+    for t in all_live_tmp1:
+        L.append(f'    gl64_t tmp1_{t} = gl64_t(uint64_t(0));')
+    for t in all_live_tmp3:
         L.append(f'    gl64_t tmp3_{t} = gl64_t(uint64_t(0));')
 
-    # Call each chunk
+    # Call each chunk, passing all cross-boundary state
     L.append('')
+    state_args = ', '.join([f'tmp1_{t}' for t in all_live_tmp1] +
+                           [f'tmp3_{t}' for t in all_live_tmp3])
     for chunk_idx in range(nChunks):
-        args_str = ', '.join([f'tmp3_{t}' for t in sorted(all_tmp3_slots)])
-        L.append(f'    chunk_{fp}_{chunk_idx}(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, ctx, {args_str});')
+        L.append(f'    chunk_{fp}_{chunk_idx}(dParams, dArgs, dExpsArgs, expressions_params, bufferCommitsSize, ctx, {state_args});')
 
     # Determine the last dest from the final op
     last_op_idx = nOps - 1

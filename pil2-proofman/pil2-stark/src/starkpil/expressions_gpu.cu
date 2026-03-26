@@ -137,9 +137,10 @@ void ExpressionsGPU::calculateExpressions_gpu(StepsParams *d_params, Dest dest, 
     h_expsArgs.dest_stagePos = dest.stagePos;
     h_expsArgs.dest_dim = dest.dim;
     h_expsArgs.dest_expr = dest.expr;
+    h_expsArgs.dest_independent = dest.independent;
     h_expsArgs.dest_nParams = dest.params.size();
 
-    assert(dest.params.size() == 1 || dest.params.size() == 2);
+    assert(dest.params.size() >= 1);
 
     DestParamsGPU* h_dest_params = new DestParamsGPU[h_expsArgs.dest_nParams];
     for (uint64_t j = 0; j < h_expsArgs.dest_nParams; ++j){
@@ -771,10 +772,22 @@ __global__  void computeExpressions_(StepsParams *d_params, DeviceArguments *d_d
             
         }
 
-        if (d_expsArgs->dest_nParams == 2)
+        if (d_expsArgs->dest_nParams == 2 && !d_expsArgs->dest_independent)
         {
-
             multiplyPolynomials__(d_expsArgs, d_destParams, d_deviceArgs, (gl64_t*) destVals, i);
+        } else if (d_expsArgs->dest_independent) {
+            // Independent batched mode: store each expression result to its own stagePos
+            for (uint64_t k = 0; k < d_expsArgs->dest_nParams; ++k) {
+                Goldilocks::Element *kVals = &destVals[k * FIELD_EXTENSION * blockDim.x];
+                uint32_t dim = d_destParams[k].dim;
+                uint64_t col = d_destParams[k].stagePos;
+                uint64_t nRows = d_expsArgs->dest_domainSize;
+                uint64_t nCols = d_expsArgs->dest_stageCols;
+                for (uint32_t d = 0; d < dim; d++) {
+                    uint64_t idx = getBufferOffset(i + threadIdx.x, col + d, nRows, nCols);
+                    d_expsArgs->dest_gpu[idx] = kVals[d * blockDim.x + threadIdx.x];
+                }
+            }
         } else {
             storePolynomial__(d_expsArgs, destVals, i);
         }
