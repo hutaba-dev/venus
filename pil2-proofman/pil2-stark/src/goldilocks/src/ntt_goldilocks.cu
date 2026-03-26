@@ -302,29 +302,22 @@ void NTT_Goldilocks_GPU::computeQ_MerkleTree_inplace(Goldilocks::Element *d_tree
     dim3 grid1((NExtended + block.x - 1) / block.x,
              (nCols + block.y - 1) / block.y);
     ntt_cuda_blocks_par(d_cmQ, d_r, d_fwd_twiddle_factors, d_inv_twiddle_factors, n_bits_ext, n_bits_ext, nCols, false, false, stream, maxLogDomainSize);
-    transposeSubBlocksInPlace<<<grid1, block, sharedMemSize, stream>>>(d_cmQ, NExtended, nCols);
-
     TimerStopCategoryGPU(timer, NTT);
+
+    // Hash from blocked-row-major NTT output BEFORE transposing
     TimerStartCategoryGPU(timer, MERKLE_TREE);
-    switch (arity)
-    {
-    case 2:
-        Poseidon2GoldilocksGPU<8>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_cmQ, nCols, NExtended, stream);
-        break;
-    case 3:
-        Poseidon2GoldilocksGPU<12>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_cmQ, nCols, NExtended, stream);
-        break;      
-    case 4:
-        Poseidon2GoldilocksGPU<16>::merkletreeCoalescedBlocks(arity, (uint64_t*) d_tree, (uint64_t *)d_cmQ, nCols, NExtended, stream);
-        break;
-    default:
-#ifndef __GOLDILOCKS_ENV__
-        zklog.error("MerkleTreeGL::calculateRootFromProof: Unsupported arity");
-        exitProcess();
-#endif
-        exit(-1);
-    }    
+    switch (arity) {
+    case 2: Poseidon2GoldilocksGPU<8>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_cmQ, nCols, NExtended, stream); break;
+    case 3: Poseidon2GoldilocksGPU<12>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_cmQ, nCols, NExtended, stream); break;
+    case 4: Poseidon2GoldilocksGPU<16>::merkletreeRowMajor(arity, (uint64_t*)d_tree, (uint64_t*)d_cmQ, nCols, NExtended, stream); break;
+    default: exit(-1);
+    }
     TimerStopCategoryGPU(timer, MERKLE_TREE);
+
+    // Transpose AFTER hash for downstream consumers
+    TimerStartCategoryGPU(timer, NTT);
+    transposeSubBlocksInPlace<<<grid1, block, sharedMemSize, stream>>>(d_cmQ, NExtended, nCols);
+    TimerStopCategoryGPU(timer, NTT);
 }
 
 void NTT_Goldilocks_GPU::LDE_GPU(gl64_t* d_dst_ntt, uint64_t offset_dst_ntt,
