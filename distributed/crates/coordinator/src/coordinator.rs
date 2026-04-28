@@ -133,14 +133,54 @@ impl Coordinator {
     pub fn new(config: Config) -> Self {
         let start_time_utc = Utc::now();
 
-        Self {
+        let coordinator = Self {
             config,
             start_time_utc,
             workers_pool: Arc::new(WorkersPool::new()),
             jobs: DashMap::new(),
             registrations: AtomicU64::new(0),
             reconnections: AtomicU64::new(0),
+        };
+
+        coordinator.spawn_stale_worker_reaper();
+        coordinator
+    }
+
+    /// Spawns a background task that periodically evicts workers whose heartbeat
+    /// has been silent for longer than `coordinator.stale_worker_timeout_seconds`.
+    ///
+    /// Computing workers are intentionally excluded — GPU proof generation can last
+    /// minutes without sending a heartbeat, and we must not evict them mid-job.
+    fn spawn_stale_worker_reaper(&self) {
+        let timeout_secs = self.config.coordinator.stale_worker_timeout_seconds;
+        if timeout_secs == 0 {
+            info!("Stale-worker reaper disabled (stale_worker_timeout_seconds = 0)");
+            return;
         }
+
+        let pool = Arc::clone(&self.workers_pool);
+        // Check every ¼ of the timeout period so stale workers are reaped promptly.
+        let check_interval = Duration::from_secs((timeout_secs / 4).max(30));
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(check_interval);
+            loop {
+                ticker.tick().await;
+                let stale = pool.stale_workers(timeout_secs).await;
+                for worker_id in stale {
+                    warn!("Reaping stale worker {} (no heartbeat for >{}s)", worker_id, timeout_secs);
+                    if let Err(e) = pool.disconnect_worker(&worker_id).await {
+                        error!("Failed to reap stale worker {}: {}", worker_id, e);
+                    }
+                }
+            }
+        });
+
+        info!(
+            "Stale-worker reaper started: evict after {}s, check every {}s",
+            timeout_secs,
+            check_interval.as_secs()
+        );
     }
 
     /// Retrieves comprehensive status information about the coordinator service.

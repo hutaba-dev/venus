@@ -48,14 +48,24 @@ pub struct ConnectionConfig {
     #[serde(default = "ConnectionConfig::default_reconnect_interval")]
     pub reconnect_interval_seconds: u64,
 
-    /// Heartbeat timeout in seconds
+    /// Heartbeat timeout in seconds (how long coordinator waits before considering worker dead)
     #[serde(default = "ConnectionConfig::default_heartbeat_timeout")]
     pub heartbeat_timeout_seconds: u64,
+
+    /// Heartbeat send interval in seconds (how often worker sends heartbeat ACK to coordinator).
+    /// Increase this when workers perform long GPU computations to avoid connection churn.
+    /// Must be less than `heartbeat_timeout_seconds` on the coordinator side.
+    #[serde(default = "ConnectionConfig::default_heartbeat_interval")]
+    pub heartbeat_interval_seconds: u64,
 }
 
 impl ConnectionConfig {
     const DEFAULT_RECONNECT_INTERVAL: u64 = 5;
     const DEFAULT_HEARTBEAT_TIMEOUT: u64 = 30;
+    /// Default heartbeat interval: 120 s (4× the old hard-coded 30 s).
+    /// Long enough to survive typical GPU proof generation (~58 s) without
+    /// triggering spurious GRPC_ERR reconnects.
+    const DEFAULT_HEARTBEAT_INTERVAL: u64 = 120;
 
     // These are needed for serde's `default` attribute
     pub const fn default_reconnect_interval() -> u64 {
@@ -65,6 +75,10 @@ impl ConnectionConfig {
     pub const fn default_heartbeat_timeout() -> u64 {
         Self::DEFAULT_HEARTBEAT_TIMEOUT
     }
+
+    pub const fn default_heartbeat_interval() -> u64 {
+        Self::DEFAULT_HEARTBEAT_INTERVAL
+    }
 }
 
 impl Default for ConnectionConfig {
@@ -72,6 +86,7 @@ impl Default for ConnectionConfig {
         Self {
             reconnect_interval_seconds: Self::DEFAULT_RECONNECT_INTERVAL,
             heartbeat_timeout_seconds: Self::DEFAULT_HEARTBEAT_TIMEOUT,
+            heartbeat_interval_seconds: Self::DEFAULT_HEARTBEAT_INTERVAL,
         }
     }
 }
@@ -108,6 +123,7 @@ impl WorkerServiceConfig {
             .set_default("coordinator.url", zisk_distributed_coordinator::Config::default_url())?
             .set_default("connection.reconnect_interval_seconds", 5)?
             .set_default("connection.heartbeat_timeout_seconds", 30)?
+            .set_default("connection.heartbeat_interval_seconds", 120)?
             .set_default("logging.level", "info")?
             .set_default("logging.format", "pretty")?;
 

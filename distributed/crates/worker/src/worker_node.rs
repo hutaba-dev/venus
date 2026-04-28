@@ -187,7 +187,8 @@ impl<T: ZiskBackend + 'static> WorkerNodeGrpc<T> {
 
         // Create channels for computation results
         let (computation_tx, mut computation_rx) = mpsc::unbounded_channel::<ComputationResult>();
-        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        let heartbeat_secs = self.worker_config.connection.heartbeat_interval_seconds;
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(heartbeat_secs));
 
         // Main non-blocking event loop
         loop {

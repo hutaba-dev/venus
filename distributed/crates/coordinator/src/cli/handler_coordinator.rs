@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cargo_zisk::ux::print_banner;
 use colored::Colorize;
-use std::{net::TcpListener, path::PathBuf};
+use std::{net::TcpListener, path::PathBuf, time::Duration};
 use tonic::transport::Server;
 use tracing::{error, info};
 use zisk_distributed_coordinator::{create_shutdown_signal, Config, CoordinatorGrpc};
@@ -58,12 +58,40 @@ pub async fn handle(
     // Create coordinator service
     let coordinator_service = CoordinatorGrpc::new(config.clone()).await?;
 
+    // Build tonic server with keep-alive settings to survive long GPU computations.
+    // These prevent silent TCP drops when workers are busy for 60-300 seconds.
+    let mut server_builder = Server::builder();
+
+    if config.server.tcp_keepalive_seconds > 0 {
+        server_builder = server_builder
+            .tcp_keepalive(Some(Duration::from_secs(config.server.tcp_keepalive_seconds)));
+        info!(
+            "gRPC TCP keep-alive enabled: {}s",
+            config.server.tcp_keepalive_seconds
+        );
+    }
+
+    if config.server.http2_keepalive_interval_seconds > 0 {
+        server_builder = server_builder
+            .http2_keepalive_interval(Some(Duration::from_secs(
+                config.server.http2_keepalive_interval_seconds,
+            )))
+            .http2_keepalive_timeout(Some(Duration::from_secs(
+                config.server.http2_keepalive_timeout_seconds,
+            )));
+        info!(
+            "gRPC HTTP/2 keep-alive enabled: interval={}s timeout={}s",
+            config.server.http2_keepalive_interval_seconds,
+            config.server.http2_keepalive_timeout_seconds,
+        );
+    }
+
     // Create shutdown signal handler
     let shutdown_signal = create_shutdown_signal();
 
     // Run the gRPC server with shutdown signal
     tokio::select! {
-        result = Server::builder()
+        result = server_builder
             .add_service(ZiskDistributedApiServer::new(coordinator_service)
                 .max_decoding_message_size(MAX_MESSAGE_SIZE)
                 .max_encoding_message_size(MAX_MESSAGE_SIZE))

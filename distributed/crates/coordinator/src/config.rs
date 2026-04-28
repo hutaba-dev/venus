@@ -21,6 +21,30 @@ pub struct ServerConfig {
     pub proofs_dir: PathBuf,
     pub no_save_proofs: bool,
     pub shutdown_timeout_seconds: u64,
+    /// TCP keep-alive interval in seconds for gRPC connections (0 = disabled).
+    /// Keeps long-lived connections alive during extended GPU computations.
+    #[serde(default = "ServerConfig::default_tcp_keepalive_seconds")]
+    pub tcp_keepalive_seconds: u64,
+    /// HTTP/2 ping interval in seconds for gRPC connections (0 = disabled).
+    /// Sends periodic pings to detect dead connections faster than TCP timeout.
+    #[serde(default = "ServerConfig::default_http2_keepalive_interval_seconds")]
+    pub http2_keepalive_interval_seconds: u64,
+    /// HTTP/2 ping timeout in seconds. If no pong is received within this time,
+    /// the connection is considered dead and closed.
+    #[serde(default = "ServerConfig::default_http2_keepalive_timeout_seconds")]
+    pub http2_keepalive_timeout_seconds: u64,
+}
+
+impl ServerConfig {
+    pub const fn default_tcp_keepalive_seconds() -> u64 {
+        60
+    }
+    pub const fn default_http2_keepalive_interval_seconds() -> u64 {
+        60
+    }
+    pub const fn default_http2_keepalive_timeout_seconds() -> u64 {
+        20
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +62,18 @@ pub struct CoordinatorConfig {
     pub phase2_timeout_seconds: u64,
     pub webhook_url: Option<String>,
     pub compressed_proofs: bool,
+    /// Seconds after last heartbeat before an idle/error worker is evicted.
+    /// Computing workers are never evicted regardless of this setting.
+    /// Set to 0 to disable stale-worker eviction.
+    #[serde(default = "CoordinatorConfig::default_stale_worker_timeout_seconds")]
+    pub stale_worker_timeout_seconds: u64,
+}
+
+impl CoordinatorConfig {
+    pub const fn default_stale_worker_timeout_seconds() -> u64 {
+        // 3× the default heartbeat interval (120 s) gives comfortable headroom
+        360
+    }
 }
 
 impl Config {
@@ -72,13 +108,17 @@ impl Config {
             .set_default("server.proofs_dir", Self::DEFAULT_PROOFS_DIR)?
             .set_default("server.no_save_proofs", false)?
             .set_default("server.shutdown_timeout_seconds", 30)?
+            .set_default("server.tcp_keepalive_seconds", 60)?
+            .set_default("server.http2_keepalive_interval_seconds", 60)?
+            .set_default("server.http2_keepalive_timeout_seconds", 20)?
             .set_default("logging.level", "info")?
             .set_default("logging.format", "pretty")?
             .set_default("coordinator.max_workers_per_job", 10)?
             .set_default("coordinator.max_total_workers", 1000)?
             .set_default("coordinator.phase1_timeout_seconds", 300)?
             .set_default("coordinator.phase2_timeout_seconds", 600)?
-            .set_default("coordinator.compressed_proofs", compressed_proofs)?;
+            .set_default("coordinator.compressed_proofs", compressed_proofs)?
+            .set_default("coordinator.stale_worker_timeout_seconds", 360)?;
 
         if let Some(path) = config_file {
             builder = builder.add_source(config::File::with_name(&path));

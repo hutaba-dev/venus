@@ -412,6 +412,27 @@ impl WorkersPool {
         }
     }
 
+    /// Returns worker IDs whose last heartbeat is older than `stale_after_seconds`.
+    ///
+    /// Only Idle and Error-state workers are considered stale — Computing workers
+    /// are deliberately excluded because long GPU computations will not heartbeat
+    /// for tens of seconds without being truly disconnected.
+    pub async fn stale_workers(&self, stale_after_seconds: u64) -> Vec<WorkerId> {
+        let now = chrono::Utc::now();
+        let threshold = chrono::Duration::seconds(stale_after_seconds as i64);
+        self.workers
+            .read()
+            .await
+            .iter()
+            .filter(|(_, info)| {
+                // Skip Computing workers: they legitimately miss heartbeats
+                !matches!(info.state, WorkerState::Computing(_))
+                    && now.signed_duration_since(info.last_heartbeat) > threshold
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// Selects workers and allocates compute units based on required capacity.
     ///
     /// Uses round-robin allocation to distribute work units across selected workers
